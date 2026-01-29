@@ -52,77 +52,89 @@ def check_mismatch(old_s, old_d, new_s, new_d):
 input_text = st.text_area("netkeibaのテキストデータを貼り付けてください", height=300)
 
 if st.button("KEI指数を算出する"):
-    try:
-        # 1. 基準指数・レース条件抽出
-        b_raw_match = re.search(r'タイム指数\s*\n(\d+)', input_text)
-        if not b_raw_match:
-            # 形式が違う場合の予備パース
-            b_raw_match = re.search(r'タイム指数[:：]\s*(\d+)', input_text)
-        
-        b_raw = int(b_raw_match.group(1))
-        class_adj = 0 if "未勝利" in input_text else 5
-        race_info = re.search(r'(東京|中山|中京|京都|阪神|新潟|小倉|福島|札幌|函館).+?(芝|ダ)(\d+)m', input_text)
-        cur_v, cur_s, cur_d = race_info.groups()
-        now_adj = COURSE_MAP.get(cur_s, {}).get(f"{cur_v}{cur_d}", 0)
-        b_final = b_raw + class_adj + now_adj
-
-        # 2. 馬データ抽出
-        horses = []
-        # 馬番、馬名、過去成績ブロックを抽出
-        horse_blocks = re.findall(r'(\d{1,2})\n\s*--\n.+?\n\s*--\n([^\n]+)\n(.*?)(?=\n\d{1,2}\n\s*--|\Z)', input_text, re.DOTALL)
-        
-        for num, name, past_text in horse_blocks:
-            # 過去指数の抽出
-            past_indices = re.findall(r'(東京|中山|中京|京都|阪神|新潟|小倉|福島|札幌|函館)(芝|ダ)(\d+).+?(\d+)\s*\(([-0-9]+)\)', past_text)
+    if not input_text:
+        st.warning("データを入力してください")
+    else:
+        try:
+            # 1. 基準指数の抽出 (より柔軟に)
+            b_raw_match = re.search(r'タイム指数\s*\n\s*(\d+)', input_text)
+            if not b_raw_match:
+                b_raw_match = re.search(r'タイム指数[:：]\s*(\d+)', input_text)
             
-            # 最大値と平均値の抽出
-            max_1y_match = re.search(r'最高.+?(\d+)', past_text)
-            avg_5_match = re.search(r'5走平均\s*(\d+)', past_text)
+            b_raw = int(b_raw_match.group(1))
+            class_adj = 0 if "未勝利" in input_text else 5
             
-            max_1y = int(max_1y_match.group(1)) if max_1y_match else 0
-            avg_5 = int(avg_5_match.group(1)) if avg_5_match else 0
+            # 開催地とコース条件を個別に抽出
+            venue_match = re.search(r'(東京|中山|中京|京都|阪神|新潟|小倉|福島|札幌|函館)', input_text)
+            course_match = re.search(r'(芝|ダ)(\d+)m', input_text)
             
-            candidates = []
-            for i, (v, s, d, idx, b_idx) in enumerate(past_indices):
-                idx = int(idx)
-                c_adj = COURSE_MAP.get(s, {}).get(f"{v}{d}", 0)
-                penalty = 0
-                if i >= 2: # 3走前以前
-                    is_outlier = (max_1y - avg_5 >= 10) and (idx == max_1y)
-                    is_mismatch = check_mismatch(s, d, cur_s, cur_d)
-                    if is_outlier or is_mismatch:
-                        penalty = -5
-                candidates.append(idx + c_adj + penalty)
+            if not (venue_match and course_match):
+                st.error("レース情報を読み取れませんでした。コピー範囲を確認してください。")
+                st.stop()
+                
+            cur_v = venue_match.group(1)
+            cur_s = course_match.group(1)
+            cur_d = course_match.group(2)
             
-            ref = max(candidates) if candidates else max_1y
-            linear = math.floor(60 + (ref - b_final))
-            horses.append({'num': int(num), 'name': name, 'ref': ref, 'linear': linear, 'kei': linear})
+            now_adj = COURSE_MAP.get(cur_s, {}).get(f"{cur_v}{cur_d}", 0)
+            b_final = b_raw + class_adj + now_adj
 
-        # 3. 救済ロジック
-        def get_rank(s):
-            if s >= 70: return 'S'
-            if s >= 65: return 'A+'
-            if s >= 60: return 'A'
-            if s >= 55: return 'B'
-            if s >= 50: return 'C'
-            return 'D'
-
-        if horses:
-            horses.sort(key=lambda x: x['ref'], reverse=True)
-            for i in range(1, len(horses)):
-                p, c = horses[i-1], horses[i]
-                if (p['ref'] - c['ref'] <= 1) and (get_rank(p['linear']) != get_rank(c['linear'])) and (p['linear'] - c['linear'] < 3):
-                    c['kei'] = p['kei']
-
-            # 4. 出力 (馬番順)
-            res_df = pd.DataFrame(horses).sort_values('num')
-            res_df['rank'] = res_df['kei'].apply(get_rank)
+            # 2. 馬データ抽出 (正規表現を強化)
+            horses = []
+            horse_blocks = re.findall(r'(\d{1,2})\n\s*--\n.+?\n\s*--\n([^\n]+)\n(.*?)(?=\n\d{1,2}\n\s*--|\Z)', input_text, re.DOTALL)
             
-            st.subheader(f"解析結果 (B_final: {b_final})")
-            st.table(res_df[['num', 'name', 'ref', 'linear', 'kei', 'rank']])
-            st.success("結果をコピーしてスプレッドシートに貼り付けてください")
-        else:
-            st.warning("馬のデータが見つかりませんでした。テキストのコピー範囲を確認してください。")
+            for num, name, past_text in horse_blocks:
+                # 過去指数の抽出
+                past_indices = re.findall(r'(東京|中山|中京|京都|阪神|新潟|小倉|福島|札幌|函館)(芝|ダ)(\d+).+?(\d+)\s*\(([-0-9]+)\)', past_text)
+                
+                max_1y_match = re.search(r'最高.+?(\d+)', past_text)
+                avg_5_match = re.search(r'5走平均\s*(\d+)', past_text)
+                
+                max_1y = int(max_1y_match.group(1)) if max_1y_match else 0
+                avg_5 = int(avg_5_match.group(1)) if avg_5_match else 0
+                
+                candidates = []
+                for i, (v, s, d, idx, b_idx) in enumerate(past_indices):
+                    idx_val = int(idx)
+                    c_adj = COURSE_MAP.get(s, {}).get(f"{v}{d}", 0)
+                    penalty = 0
+                    if i >= 2: # 3走前以前
+                        is_outlier = (max_1y - avg_5 >= 10) and (idx_val == max_1y)
+                        is_mismatch = check_mismatch(s, d, cur_s, cur_d)
+                        if is_outlier or is_mismatch:
+                            penalty = -5
+                    candidates.append(idx_val + c_adj + penalty)
+                
+                ref = max(candidates) if candidates else max_1y
+                linear = math.floor(60 + (ref - b_final))
+                horses.append({'num': int(num), 'name': name.strip(), 'ref': ref, 'linear': linear, 'kei': linear})
 
-    except Exception as e:
-        st.error(f"エラーが発生しました。タイム指数マスターの画面全体をコピーしているか確認してください。: {e}")
+            # 3. 救済ロジック
+            def get_rank(s):
+                if s >= 70: return 'S'
+                if s >= 65: return 'A+'
+                if s >= 60: return 'A'
+                if s >= 55: return 'B'
+                if s >= 50: return 'C'
+                return 'D'
+
+            if horses:
+                horses.sort(key=lambda x: x['ref'], reverse=True)
+                for i in range(1, len(horses)):
+                    p, c = horses[i-1], horses[i]
+                    if (p['ref'] - c['ref'] <= 1) and (get_rank(p['linear']) != get_rank(c['linear'])) and (p['linear'] - c['linear'] < 3):
+                        c['kei'] = p['kei']
+
+                # 4. 出力 (馬番順)
+                res_df = pd.DataFrame(horses).sort_values('num')
+                res_df['rank'] = res_df['kei'].apply(get_rank)
+                
+                st.subheader(f"解析結果: {cur_v}{cur_s}{cur_d}m (B_final: {b_final})")
+                st.table(res_df[['num', 'name', 'ref', 'linear', 'kei', 'rank']])
+                st.code(res_df[['num', 'name', 'ref', 'linear', 'kei', 'rank']].to_markdown(index=False))
+                st.success("上の表をコピーしてスプレッドシートに貼り付けてください")
+            else:
+                st.warning("馬のデータが抽出できませんでした。コピー範囲が足りない可能性があります。")
+
+        except Exception as e:
+            st.error(f"システムエラー: {e}")
