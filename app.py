@@ -91,4 +91,34 @@ if st.button("KEI指数を算出"):
                 a_5 = int(re.search(r'5走平均\s*(\d+)', data).group(1)) if '5走平均' in data else 0
 
                 cands = []
-                for j, (
+                for j, (v, s, d, p, idx, b_idx) in enumerate(past_runs):
+                    if s != cur_s: continue
+                    idx_v = int(idx)
+                    pen = 0
+                    if j >= 2: # 3走前以前
+                        if (m_1y - a_5 >= 10 and idx_v == m_1y) or check_mismatch(s, d, cur_s, cur_d):
+                            pen = -5
+                    cands.append(idx_v + COURSE_MAP.get(s, {}).get(f"{v}{d}", 0) + pen)
+                
+                ref = max(cands) if cands else m_1y
+                linear = math.floor(60 + (ref - b_final))
+                horses.append({'num': int(num), 'name': name, 'ref': ref, 'linear': linear, 'kei': linear})
+
+            # C. 救済・ソート・出力
+            if horses:
+                horses.sort(key=lambda x: x['ref'], reverse=True)
+                for i in range(1, len(horses)):
+                    p, c = horses[i-1], horses[i]
+                    if (p['ref'] - c['ref'] <= 1) and (get_rank(p['linear']) != get_rank(c['linear'])) and (p['linear'] - c['linear'] < 3):
+                        c['kei'] = p['kei']
+
+                df = pd.DataFrame(horses).sort_values('num')
+                df['rank'] = df['kei'].apply(get_rank)
+                
+                st.subheader(f"解析完了: {venue}{cur_s}{cur_d} (B_final: {b_final})")
+                st.table(df[['num', 'name', 'ref', 'linear', 'kei', 'rank']])
+                st.text_area("Excel用 (TSV)", df[['num', 'name', 'ref', 'linear', 'kei', 'rank']].to_csv(sep='\t', index=False))
+            else:
+                st.error("馬のデータを読み取れませんでした。")
+        except Exception as e:
+            st.error(f"Error: {e}")
